@@ -296,7 +296,7 @@ findm   inc edi
         inc ebx
         lea edi, [edi + 4]
         mov al, byte[edi]
-        test al, 080h
+        test al, immediate
         jne findi
         neg ebx
 findi   and eax, 31
