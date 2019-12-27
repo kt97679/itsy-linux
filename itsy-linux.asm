@@ -165,11 +165,11 @@ next    lodsd
 zerob_z pop ebx
         jmp next
 
-    primitive 'branch',branch
+    primitive 'branch', branch
         mov esi, dword[esi]
         jmp next
 
-    primitive 'count',count
+    primitive 'count', count
         movzx eax, byte[ebx]
         inc ebx
         push ebx
@@ -200,7 +200,7 @@ zerob_z pop ebx
         pop ebx
         jmp next
 
-    primitive '>number',to_number
+    primitive '>number', to_number
         pop edi
         pop ecx
         pop eax
