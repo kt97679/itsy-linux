@@ -48,7 +48,7 @@ ehdr:                           ; Elf32_Ehdr
         dw   ehdrsize   ; e_ehsize
         dw   phdrsize   ; e_phentsize
         dw   1                  ; e_phnum
-        dw   0                  ; e_shentsize
+        dw   0x28               ; e_shentsize without setting this size 'file' complains that elf header is corrupted
         dw   0                  ; e_shnum
         dw   0                  ; e_shstrndx
 
