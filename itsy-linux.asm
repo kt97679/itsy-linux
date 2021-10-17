@@ -80,9 +80,10 @@ phdrsize   equ   $ - phdr
     variable 'tib', t_i_b, TIBPTR
 
     primitive 'execute', execute
+        ; ebx is TOS, so it contains address we will jump to
         mov eax, ebx ; eax is important here, it is used by docolon and dovar
-        pop ebx
-        jmp dword[eax]
+        pop ebx ; we used TOS so we need to pop new value from the data stack
+        jmp dword[eax] ; now we jump to the address that is stored in the eax
 
     primitive 'abort', abort
         mov eax, dword[val_number_t_i_b]
