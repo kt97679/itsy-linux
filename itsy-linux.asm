@@ -79,6 +79,12 @@ phdrsize   equ   $ - phdr
     variable 'last', last, final
     variable 'tib', t_i_b, TIBPTR
 
+    primitive 'bye', bye
+        xor eax, eax
+        inc eax ; eax holds 1 (syscall for exit)
+        xor ebx, ebx ; ebx holds 0 (exit code)
+        int 80h
+
     primitive 'execute', execute
         ; ebx is TOS, so it contains address we will jump to
         mov eax, ebx ; eax is important here, it is used by docolon and dovar
