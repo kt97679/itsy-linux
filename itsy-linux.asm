@@ -191,7 +191,6 @@ zerob_z pop ebx
         pop ecx       ; buffer
         int 80h
         xchg ebx, eax ; eax after sys_read contains number of bytes read (negative number means error), let's move it to TOS
-        dec ebx       ; last char is CR
         jmp next
 
     primitive 'emit', emit
@@ -256,7 +255,12 @@ wordf   cmp ecx, ebx
         je wordz
         mov al, byte[ebx]
         inc ebx
+        cmp dl, 32
+        jne word_exact1
         cmp al, dl
+        jbe wordf
+        jmp wordc
+word_exact1        cmp al, dl
         je wordf
 wordc   inc edi
         mov byte[edi], al
@@ -264,7 +268,12 @@ wordc   inc edi
         je wordz
         mov al, byte[ebx]
         inc ebx
+        cmp dl, 32
+        jne word_exact2
         cmp al, dl
+        jbe wordz
+        jmp wordc
+word_exact2        cmp al, dl
         jne wordc
 wordz   mov byte[edi + 1], 32
         mov eax, dword[val_dp]
