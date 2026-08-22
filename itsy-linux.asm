@@ -26,11 +26,13 @@ val_ %+ %2 dd %3
 
 %define TEXTORG 0x00400000
 %define MEMSIZE 1048576
-%define TIBSIZE 80
+%define TIBSIZE 256
+%define INBUFSIZE 256               ; private kernel input buffer
 %define STACKSIZE 4096
 %define TIBPTR TEXTORG + MEMSIZE - TIBSIZE
-%define SP0 TIBPTR - 4
-%define RP0 SP0 - STACKSIZE
+%define INBUF  TIBPTR - INBUFSIZE   ; private buffer just below TIB
+%define SP0    INBUF - 4
+%define RP0    SP0 - STACKSIZE
 
 BITS 32
         org     TEXTORG
@@ -79,10 +81,16 @@ phdrsize   equ   $ - phdr
     variable 'last', last, final
     variable 'tib', t_i_b, TIBPTR
 
+    ; Private input buffer state (not exposed as Forth words)
+    ; in_pos  = current read index into INBUF
+    ; in_len  = number of valid bytes currently in INBUF
+in_pos  dd 0
+in_len  dd 0
+
     primitive 'bye', bye
+        xor ebx, ebx            ; exit code 0
         xor eax, eax
-        inc eax ; eax holds 1 (syscall for exit)
-        xor ebx, ebx ; ebx holds 0 (exit code)
+        inc eax                 ; sys_exit = 1
         int 80h
 
     primitive 'execute', execute
@@ -96,6 +104,8 @@ phdrsize   equ   $ - phdr
         mov dword[val_to_in], eax
         xor ebp, ebp
         mov dword[val_state], ebp
+        ; keep private input buffer (in_pos/in_len) so already-read
+        ; lines are not discarded after a failed word
         mov esp, SP0
         mov ebp, RP0
         mov esi, xt_interpret + 4
@@ -116,14 +126,6 @@ phdrsize   equ   $ - phdr
         xchg eax, ebx
         jmp next
 
-    primitive 'rot', rote
-        pop edx
-        pop eax
-        push edx
-        push ebx
-        xchg eax, ebx
-        jmp next
-
     primitive 'drop', drop
         pop ebx
         jmp next
@@ -139,6 +141,63 @@ phdrsize   equ   $ - phdr
     primitive '+', plus
         pop eax
         add ebx, eax
+        jmp next
+
+    primitive '-', minus
+        pop eax
+        sub eax, ebx
+        mov ebx, eax
+        jmp next
+
+    primitive '*', star
+        pop eax
+        imul ebx, eax
+        jmp next
+
+    primitive 'and', and_
+        pop eax
+        and ebx, eax
+        jmp next
+
+    primitive 'or', or_
+        pop eax
+        or ebx, eax
+        jmp next
+
+    primitive 'invert', invert
+        not ebx
+        jmp next
+
+    primitive '0<', zero_less
+        sar ebx, 31             ; arithmetic smear sign → 0 or -1
+        jmp next
+
+    ; >r ( x -- )   (R: -- x)
+    primitive '>r', to_r
+        xchg ebp, esp
+        push ebx
+        xchg ebp, esp
+        pop ebx
+        jmp next
+
+    ; r> ( -- x )   (R: x -- )
+    primitive 'r>', r_from
+        push ebx
+        xchg ebp, esp
+        pop ebx
+        xchg ebp, esp
+        jmp next
+
+    ; c@ ( addr -- char )
+    primitive 'c@', c_fetch
+        movzx ebx, byte [ebx]
+        jmp next
+
+    ; c! ( char addr -- )
+    primitive 'c!', c_store
+        pop eax
+        mov [ebx], al
+        pop ebx
         jmp next
 
     primitive 'exit', exit
@@ -176,33 +235,73 @@ zerob_z pop ebx
         mov esi, dword[esi]
         jmp next
 
-    primitive 'count', count
-        movzx eax, byte[ebx]
-        inc ebx
-        push ebx
-        mov ebx, eax
-        jmp next
-
+    ; accept ( addr len -- len' )
+    ; Buffered, line-oriented input.
+    ; Stops at \n (not stored), EOF or max len.
+    ; Returns n >= 0 = chars stored (0 = empty line);
+    ;         -1     = true EOF.
     primitive 'accept', accept
-        xor edx, edx
-        xchg edx, ebx ; now edx contains read byte count and ebx 0 (reading from stdin)
-        xor eax, eax
-        mov al, 3     ; sys_read
-        pop ecx       ; buffer
+        pop edi                 ; edi = destination buffer
+        mov ecx, ebx            ; ecx = max chars to accept
+        xor ebx, ebx            ; ebx = chars written so far
+        test ecx, ecx
+        jz accept_done
+
+accept_next_char:
+        mov eax, [in_pos]
+        cmp eax, [in_len]
+        jb accept_have_data
+
+        ; Private buffer empty → refill
+        mov dword [in_pos], 0
+        mov dword [in_len], 0
+        push ebx
+        push ecx
+        push edi
+        mov eax, 3              ; sys_read
+        xor ebx, ebx            ; stdin
+        mov ecx, INBUF
+        mov edx, INBUFSIZE
         int 80h
-        xchg ebx, eax ; eax after sys_read contains number of bytes read (negative number means error), let's move it to TOS
+        pop edi
+        pop ecx
+        pop ebx
+        test eax, eax
+        jg accept_got_data
+        ; EOF: keep gathered chars, or -1 if none
+        test ebx, ebx
+        jnz accept_done
+        dec ebx                 ; 0 → -1
+        jmp accept_done
+accept_got_data:
+        mov [in_len], eax
+
+accept_have_data:
+        mov eax, [in_pos]
+        movzx edx, byte [INBUF + eax]
+        inc eax
+        mov [in_pos], eax
+        cmp dl, 13              ; CR — skip
+        je accept_next_char
+        cmp dl, 10              ; LF — end of line
+        je accept_done
+        mov [edi], dl
+        inc edi
+        inc ebx
+        dec ecx
+        jnz accept_next_char
+accept_done:
         jmp next
 
-    primitive 'emit', emit
-        push ebx
-        xor eax, eax
-        mov al, 4    ; sys_write
-        xor ebx, ebx
-        inc ebx      ; ebx now contains 1 (stdout)
-        mov ecx, esp ; buffer
-        mov edx, ebx ; write byte count
+    ; type ( addr len -- )
+    primitive 'type', type
+        mov edx, ebx            ; edx = len
+        pop ecx                 ; ecx = addr
+        pop ebx                 ; restore TOS
+        push ebx                ; save TOS across syscall
+        mov eax, 4              ; sys_write
+        mov ebx, 1              ; stdout
         int 80h
-        pop ebx
         pop ebx
         jmp next
 
@@ -321,6 +420,22 @@ findi   and eax, 31
         push edi
         jmp next
 
+    ; rot ( x y z -- y z x )
+    primitive 'rot', rote
+        pop eax                 ; eax = y ; [esp]=x, ebx=z
+        push ebx                ; [esp]=z, [esp+4]=x
+        mov ebx, [esp+4]        ; ebx = x
+        mov [esp+4], eax        ; [esp+4]=y → (y z x)
+        jmp next
+
+    ; count ( addr -- addr+1 len )
+    primitive 'count', count
+        movzx eax, byte [ebx]
+        inc ebx
+        push ebx
+        mov ebx, eax
+        jmp next
+
     colon ':', colon
         dd xt_lit, -1
         dd xt_state
@@ -380,18 +495,38 @@ interpt dd xt_number_t_i_b
         dd xt_fetch
         dd xt_equals
         dd xt_zero_branch
-        dd intpar
+        dd intpar                 ; if >in != #tib → process next word
+        ; need a new line
         dd xt_t_i_b
         dd xt_fetch
-        dd xt_lit, 50
-        dd xt_accept
+        dd xt_lit, 255            ; max line length
+        dd xt_accept              ; ( len | -1 )
+        dd xt_dupe
+        dd xt_lit, -1
+        dd xt_equals
+        dd xt_zero_branch
+        dd not_eof                ; if not -1 → continue
+        dd xt_bye                 ; true EOF → exit
+not_eof dd xt_dupe
+        dd xt_zero_branch
+        dd empty_line             ; len=0 → blank line, do not WORD
         dd xt_number_t_i_b
-        dd xt_store
+        dd xt_store               ; #tib = len
         dd xt_lit, 0
         dd xt_to_in
-        dd xt_store
+        dd xt_store               ; >in = 0
+        dd xt_branch
+        dd intpar
+empty_line:
+        dd xt_drop                ; drop zero length
+        dd xt_branch
+        dd interpt                ; read another line
 intpar  dd xt_lit, 32
         dd xt_word
+        dd xt_dupe
+        dd xt_c_fetch            ; length of token
+        dd xt_zero_branch
+        dd empty_tok             ; empty token → drop addr, continue
         dd xt_find
         dd xt_dupe
         dd xt_zero_branch
@@ -402,6 +537,10 @@ intpar  dd xt_lit, 32
         dd xt_zero_branch
         dd intexc
         dd xt_comma
+        dd xt_branch
+        dd intdone
+empty_tok:
+        dd xt_drop                ; drop c-addr of empty token
         dd xt_branch
         dd intdone
 intexc  dd xt_execute
